@@ -1,6 +1,7 @@
 use super::super::super::fs::compute_oflags;
 use crate::filesystem::primitives::{OpenOptions, errors, manually};
 use rustix::fs::{Mode, OFlags, RawMode, openat};
+use rustix::io::Errno;
 use std::path::Path;
 use std::{fs, io};
 
@@ -23,7 +24,10 @@ pub(crate) fn open_impl(
 
     match openat(start, path, oflags, mode) {
         Ok(file) => Ok(file.into()),
-        Err(rustix::io::Errno::NOTCAPABLE) => Err(errors::escape_attempt()),
+        Err(Errno::NOTCAPABLE) => Err(errors::escape_attempt()),
+        // FreeBSD reports `EMLINK` when `O_NOFOLLOW` encounters a symlink.
+        // Normalize this to the portable `ELOOP` used by WASI for this case.
+        Err(Errno::MLINK) if oflags.contains(OFlags::NOFOLLOW) => Err(Errno::LOOP.into()),
         Err(err) => Err(err.into()),
     }
 }

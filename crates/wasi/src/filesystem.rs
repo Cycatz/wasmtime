@@ -412,6 +412,8 @@ fn from_raw_os_error(err: Option<i32>) -> Option<ErrorCode> {
         RustixErrno::NAMETOOLONG => ErrorCode::NameTooLong,
         RustixErrno::NOTEMPTY => ErrorCode::NotEmpty,
         RustixErrno::LOOP => ErrorCode::Loop,
+        #[cfg(target_os = "freebsd")]
+        RustixErrno::NOTCAPABLE => ErrorCode::NotPermitted,
         RustixErrno::OVERFLOW => ErrorCode::Overflow,
         RustixErrno::ILSEQ => ErrorCode::IllegalByteSequence,
         RustixErrno::NOTSUP => ErrorCode::Unsupported,

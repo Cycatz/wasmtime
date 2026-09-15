@@ -32,8 +32,13 @@ pub(crate) fn open_unchecked(
         #[cfg(not(any(target_os = "freebsd", target_os = "dragonfly", target_os = "netbsd")))]
         io::Errno::LOOP => Err(OpenUncheckedError::Symlink(err.into(), ())),
 
-        // FreeBSD and similar (but not Darwin) use `EMLINK`.
-        #[cfg(any(target_os = "freebsd", target_os = "dragonfly"))]
+        // FreeBSD uses `EMLINK`; normalize it to the portable `ELOOP` exposed
+        // by WASI while retaining the symlink classification internally.
+        #[cfg(target_os = "freebsd")]
+        io::Errno::MLINK => Err(OpenUncheckedError::Symlink(io::Errno::LOOP.into(), ())),
+
+        // DragonFly also uses `EMLINK`, which its callers currently preserve.
+        #[cfg(target_os = "dragonfly")]
         io::Errno::MLINK => Err(OpenUncheckedError::Symlink(err.into(), ())),
 
         // NetBSD uses `EFTYPE`.
