@@ -684,9 +684,9 @@ impl Drop for TcpReceiveStream {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
 pub use inherits_option::*;
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
 mod inherits_option {
     use crate::sockets::SocketAddressFamily;
     use tokio::net::TcpStream;
@@ -707,9 +707,9 @@ mod inherits_option {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
 pub use does_not_inherit_options::*;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
 mod does_not_inherit_options {
     use crate::sockets::SocketAddressFamily;
     use rustix::net::sockopt;

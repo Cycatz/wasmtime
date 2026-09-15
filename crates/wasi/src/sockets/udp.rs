@@ -406,6 +406,8 @@ fn disconnect(sockfd: impl AsFd) -> Result<(), Errno> {
         // address family of the socket.
         #[cfg(target_os = "macos")]
         Err(Errno::INVAL | Errno::AFNOSUPPORT) => Ok(()),
+        #[cfg(target_os = "freebsd")]
+        Err(Errno::OPNOTSUPP | Errno::AFNOSUPPORT) => Ok(()),
         r => r,
     }
 }
