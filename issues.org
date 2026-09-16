@@ -127,3 +127,44 @@ This issue tracks =overrun_with_big_module(32 << 10)= specifically. Related case
 - FreeBSD AArch64.
 - The related =8 KiB= case tracked separately as orgbug #2; one shared fix may resolve both issues.
 
+* TODO Investigate FreeBSD timeout in parallel Preview 2 sync UDP closed-receiver test :freebsd:
+  :PROPERTIES:
+  :ID:       b231b674-27b5-495f-879b-4f2e5d82febf
+  :ORGBUG_ID: 4
+  :CREATED:  [2026-09-16 Wed]
+  :END:
+*Goal*
+
+Explain and eliminate the parallel-only timeout of =p2::sync::p2_udp_send_to_closed_receiver= on FreeBSD amd64 without hiding the test behind a permanent platform ignore.
+
+*Observed behavior*
+
+- The test timed out when executed as part of the parallel =wasmtime-wasi= test suite on FreeBSD.
+- The exact same sync test passes when run alone with =--exact=.
+- The Preview 2 async and Preview 3 variants pass.
+- The source already documents related parallel flakiness on Windows and macOS. Possible causes noted there include interaction with the async variation, another test rebinding the supposedly closed port, and OS ICMP rate limiting.
+- The FreeBSD workflow currently skips only this test in the combined WASI invocation, then runs it separately and requires the isolated run to pass.
+
+*Investigation scope*
+
+1. Establish reproducibility on FreeBSD 14.5 and 15.1 amd64 with repeated full-suite runs.
+2. Compare normal parallel execution, =--test-threads=1=, the sync test paired with its async variant, and the sync test paired with other UDP tests.
+3. Trace socket addresses, port allocation/reuse, ICMP errors, poll readiness, and timeout behavior to distinguish test interference from a FreeBSD socket or sync-adapter defect.
+4. Determine whether the test needs unique port coordination, a stronger close/rebind synchronization point, or a platform/runtime correction.
+5. Keep the isolated check until the parallel path is demonstrably stable.
+
+*Acceptance criteria*
+
+- Repeated combined =wasmtime-wasi= runs pass on FreeBSD 14.5 and 15.1 amd64 with this test enabled.
+- The =--skip p2::sync::p2_udp_send_to_closed_receiver= workaround is removed from =.github/workflows/freebsd.yml=.
+- The dedicated isolated workflow step and its aggregate outcome handling are removed.
+- The sync, async, and Preview 3 variants continue to pass individually.
+- No unconditional FreeBSD ignore is introduced unless upstream explicitly decides that the underlying OS behavior makes the assertion invalid.
+- The full FreeBSD =workspace-debug= suite remains green.
+
+*Out of scope*
+
+- Fixing the existing Windows or macOS flakiness unless the same root cause and fix apply.
+- Unrelated UDP disconnect error normalization already covered by the FreeBSD compatibility patch.
+- FreeBSD AArch64.
+
