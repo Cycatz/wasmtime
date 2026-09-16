@@ -22,7 +22,6 @@ on:
         options:
         - core
         - workspace-debug
-        - workspace-debug-and-release
 
 permissions:
   contents: read
@@ -113,9 +112,9 @@ jobs:
         rustc --version --verbose
         cargo --version --verbose
 
-    # This is the native-build gate that upstream currently performs only by
-    # cross-compiling from Ubuntu.
-    - name: Check the native workspace build
+    # This is the native default-feature build gate that upstream currently
+    # performs only by cross-compiling from Ubuntu.
+    - name: Check the native default build
       shell: freebsd {0}
       run: |
         set -eux
@@ -126,7 +125,7 @@ jobs:
     # crate list here. Its first three buckets contain every workspace crate
     # except the three large crates covered by the core steps below.
     - name: Prepare the generic workspace shards
-      if: env.FREEBSD_TEST_SUITE == 'workspace-debug' || env.FREEBSD_TEST_SUITE == 'workspace-debug-and-release'
+      if: env.FREEBSD_TEST_SUITE == 'workspace-debug'
       shell: freebsd {0}
       run: |
         set -eux
@@ -245,7 +244,7 @@ jobs:
 
     - name: Test generic workspace shard 1
       id: workspace_1
-      if: always() && (env.FREEBSD_TEST_SUITE == 'workspace-debug' || env.FREEBSD_TEST_SUITE == 'workspace-debug-and-release')
+      if: always() && env.FREEBSD_TEST_SUITE == 'workspace-debug'
       continue-on-error: true
       shell: freebsd {0}
       run: |
@@ -256,7 +255,7 @@ jobs:
 
     - name: Test generic workspace shard 2
       id: workspace_2
-      if: always() && (env.FREEBSD_TEST_SUITE == 'workspace-debug' || env.FREEBSD_TEST_SUITE == 'workspace-debug-and-release')
+      if: always() && env.FREEBSD_TEST_SUITE == 'workspace-debug'
       continue-on-error: true
       shell: freebsd {0}
       run: |
@@ -267,7 +266,7 @@ jobs:
 
     - name: Test generic workspace shard 3
       id: workspace_3
-      if: always() && (env.FREEBSD_TEST_SUITE == 'workspace-debug' || env.FREEBSD_TEST_SUITE == 'workspace-debug-and-release')
+      if: always() && env.FREEBSD_TEST_SUITE == 'workspace-debug'
       continue-on-error: true
       shell: freebsd {0}
       run: |
@@ -275,16 +274,6 @@ jobs:
         export PATH="$HOME/.cargo/bin:/usr/local/bin:$PATH"
         python3 ./ci/run-tests.py --locked --no-fail-fast \
           $(cat /tmp/freebsd-workspace-bucket-3)
-
-    - name: Test the release workspace
-      id: workspace_release
-      if: env.FREEBSD_TEST_SUITE == 'workspace-debug-and-release'
-      continue-on-error: true
-      shell: freebsd {0}
-      run: |
-        set -eux
-        export PATH="$HOME/.cargo/bin:/usr/local/bin:$PATH"
-        python3 ./ci/run-tests.py --locked --release --no-fail-fast
 
     - name: Report FreeBSD test failures
       if: always()
@@ -301,7 +290,6 @@ jobs:
         WORKSPACE_1_OUTCOME: ${{ steps.workspace_1.outcome }}
         WORKSPACE_2_OUTCOME: ${{ steps.workspace_2.outcome }}
         WORKSPACE_3_OUTCOME: ${{ steps.workspace_3.outcome }}
-        WORKSPACE_RELEASE_OUTCOME: ${{ steps.workspace_release.outcome }}
       run: |
         declare -a failed=()
         [[ "$RUNTIME_OUTCOME" == success ]] || failed+=(runtime)
@@ -311,13 +299,10 @@ jobs:
         [[ "$CLI_REMAINING_OUTCOME" == success ]] || failed+=(cli-remaining)
         [[ "$WASI_OUTCOME" == success ]] || failed+=(wasi)
         [[ "$WASI_UDP_CLOSED_RECEIVER_OUTCOME" == success ]] || failed+=(wasi-udp-closed-receiver)
-        if [[ "$FREEBSD_TEST_SUITE" != core ]]; then
+        if [[ "$FREEBSD_TEST_SUITE" == workspace-debug ]]; then
           [[ "$WORKSPACE_1_OUTCOME" == success ]] || failed+=(workspace-1)
           [[ "$WORKSPACE_2_OUTCOME" == success ]] || failed+=(workspace-2)
           [[ "$WORKSPACE_3_OUTCOME" == success ]] || failed+=(workspace-3)
-        fi
-        if [[ "$FREEBSD_TEST_SUITE" == workspace-debug-and-release ]]; then
-          [[ "$WORKSPACE_RELEASE_OUTCOME" == success ]] || failed+=(workspace-release)
         fi
         if (( ${#failed[@]} != 0 )); then
           printf '::error title=FreeBSD failures::%s\n' "${failed[*]}"
