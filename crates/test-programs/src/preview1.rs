@@ -71,6 +71,14 @@ macro_rules! assert_errno {
             assert_errno!(e, $($rest)+, $i);
         }
     };
+    ($s:expr, freebsd => $i:expr, $( $rest:tt )+) => {
+        let e = $s;
+        if $crate::preview1::config().errno_expect_freebsd() {
+            assert_errno!(e, $i);
+        } else {
+            assert_errno!(e, $($rest)+, $i);
+        }
+    };
     ($s:expr, unix => $i:expr, $( $rest:tt )+) => {
         let e = $s;
         if $crate::preview1::config().errno_expect_unix() {
@@ -137,6 +145,7 @@ pub struct TestConfig {
 enum ErrnoMode {
     Unix,
     MacOS,
+    FreeBSD,
     Windows,
     Permissive,
 }
@@ -147,6 +156,8 @@ impl TestConfig {
             ErrnoMode::Unix
         } else if std::env::var("ERRNO_MODE_MACOS").is_ok() {
             ErrnoMode::MacOS
+        } else if std::env::var("ERRNO_MODE_FREEBSD").is_ok() {
+            ErrnoMode::FreeBSD
         } else if std::env::var("ERRNO_MODE_WINDOWS").is_ok() {
             ErrnoMode::Windows
         } else {
@@ -168,13 +179,19 @@ impl TestConfig {
     }
     pub fn errno_expect_unix(&self) -> bool {
         match self.errno_mode {
-            ErrnoMode::Unix | ErrnoMode::MacOS => true,
+            ErrnoMode::Unix | ErrnoMode::MacOS | ErrnoMode::FreeBSD => true,
             _ => false,
         }
     }
     pub fn errno_expect_macos(&self) -> bool {
         match self.errno_mode {
             ErrnoMode::MacOS => true,
+            _ => false,
+        }
+    }
+    pub fn errno_expect_freebsd(&self) -> bool {
+        match self.errno_mode {
+            ErrnoMode::FreeBSD => true,
             _ => false,
         }
     }

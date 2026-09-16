@@ -11,6 +11,7 @@ unsafe fn test_unlink_file_trailing_slashes(dir_fd: wasip1::Fd) {
     assert_errno!(
         wasip1::path_unlink_file(dir_fd, "dir")
             .expect_err("unlink_file on a directory should fail"),
+        freebsd => wasip1::ERRNO_PERM,
         macos => wasip1::ERRNO_PERM,
         unix => wasip1::ERRNO_ISDIR,
         windows => wasip1::ERRNO_ACCES
@@ -20,6 +21,7 @@ unsafe fn test_unlink_file_trailing_slashes(dir_fd: wasip1::Fd) {
     assert_errno!(
         wasip1::path_unlink_file(dir_fd, "dir/")
             .expect_err("unlink_file on a directory should fail"),
+        freebsd => wasip1::ERRNO_PERM,
         macos => wasip1::ERRNO_PERM,
         unix => wasip1::ERRNO_ISDIR,
         windows => wasip1::ERRNO_ACCES

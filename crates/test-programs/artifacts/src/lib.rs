@@ -22,13 +22,17 @@ pub fn wasi_tests_environment() -> &'static [(&'static str, &'static str)] {
             ("RENAME_DIR_ONTO_FILE", "1"),
         ]
     }
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_os = "macos", target_os = "freebsd"))))]
     {
         &[("ERRNO_MODE_UNIX", "1")]
     }
     #[cfg(target_os = "macos")]
     {
         &[("ERRNO_MODE_MACOS", "1")]
+    }
+    #[cfg(target_os = "freebsd")]
+    {
+        &[("ERRNO_MODE_FREEBSD", "1")]
     }
 }
 
