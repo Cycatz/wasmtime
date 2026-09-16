@@ -1,0 +1,45 @@
+#+title: Issues
+#+TODO: TODO INPROGRESS BLOCKED | DONE CANCELED
+#+STARTUP: content
+
+* TODO Implement WebAssembly stack switching on x86_64 FreeBSD :freebsd:
+  :PROPERTIES:
+  :ID:       b2e3fe88-ebf6-4480-a601-c3aced81d4d4
+  :ORGBUG_ID: 1
+  :CREATED:  [2026-09-16 Wed]
+  :END:
+*Goal*
+
+Implement and validate Wasmtime's experimental WebAssembly stack-switching proposal on =x86_64-unknown-freebsd=.
+
+*Context*
+
+- FreeBSD amd64 can build and run the broader Wasmtime workspace, but =Config::wasm_stack_switching(true)= is currently rejected.
+- =crates/wasmtime/src/config.rs= and =crates/wasmtime/src/engine.rs= do not select a stack-switch model for FreeBSD.
+- =crates/cranelift/src/func_environ/stack_switching/instructions.rs= currently defines the control-context layout only for x86_64 Linux.
+- The continuation stack allocator already has an x86_64 Unix implementation under =crates/wasmtime/src/runtime/vm/stack_switching/stack/unix.rs=, and the fiber crate has x86_64 switching routines. These pieces must be audited rather than assumed to be ABI-compatible.
+- The FreeBSD baseline currently treats failure to initialize this feature as an expected platform limitation in =tests/all/tags.rs=.
+
+*Scope*
+
+1. Document the precise platform gates and ABI assumptions for x86_64 Linux versus x86_64 FreeBSD.
+2. Determine whether FreeBSD can use Cranelift's =basic= stack-switch model and the existing control-context layout; add a dedicated layout when required.
+3. Audit continuation-stack allocation, guard pages, register preservation, stack alignment, native signal/trap handling, unwinding, and backtraces on FreeBSD.
+4. Enable FreeBSD in the Wasmtime configuration and compiler checks only after those assumptions are validated.
+5. Run the stack-switching unit, integration, and WAST suites on native FreeBSD amd64 through the vmactions CI workflow.
+6. Remove the FreeBSD expected-unsupported condition once the feature works reliably.
+
+*Acceptance criteria*
+
+- =Config::wasm_stack_switching(true)= initializes on =x86_64-unknown-freebsd=.
+- =tests/all/tags.rs= and =tests/all/stack_switching.rs= pass without a FreeBSD-specific skip or expected failure.
+- Stack-switching WAST tests run instead of being filtered on FreeBSD and pass.
+- Full FreeBSD 14.5 and 15.1 amd64 =workspace-debug= CI remains green.
+- Any FreeBSD-specific ABI or signal-handling assumptions are documented next to the implementation.
+
+*Out of scope*
+
+- FreeBSD AArch64 support.
+- Resolving the separate native host-stack-overflow diagnostic difference tracked by the strict =host_segfault= XFAIL.
+- FreeBSD target-tier promotion or maintainer approval.
+
