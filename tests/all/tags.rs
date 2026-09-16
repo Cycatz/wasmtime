@@ -1,6 +1,14 @@
 use crate::ErrorExt;
 use wasmtime::*;
 
+fn stack_switching_is_expected_to_work() -> bool {
+    cfg!(all(
+        target_arch = "x86_64",
+        unix,
+        not(target_os = "freebsd")
+    ))
+}
+
 #[test]
 #[cfg_attr(miri, ignore)]
 fn wasm_export_tags() -> Result<()> {
@@ -102,7 +110,7 @@ fn stack_switching_cont_new_high_arity_rejected() -> Result<()> {
 
     let Ok(engine) = Engine::new(&config) else {
         // Stack switching is not supported on all platforms; skip gracefully.
-        assert!(!(cfg!(target_arch = "x86_64") && cfg!(unix)));
+        assert!(!stack_switching_is_expected_to_work());
         return Ok(());
     };
 
@@ -152,7 +160,7 @@ fn stack_switching_cont_new_guard_page_arity_rejected() -> Result<()> {
 
     let Ok(engine) = Engine::new(&config) else {
         // Stack switching is not supported on all platforms; skip gracefully.
-        assert!(!(cfg!(target_arch = "x86_64") && cfg!(unix)));
+        assert!(!stack_switching_is_expected_to_work());
         return Ok(());
     };
 
