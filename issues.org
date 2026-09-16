@@ -43,3 +43,87 @@ Implement and validate Wasmtime's experimental WebAssembly stack-switching propo
 - Resolving the separate native host-stack-overflow diagnostic difference tracked by the strict =host_segfault= XFAIL.
 - FreeBSD target-tier promotion or maintainer approval.
 
+* TODO Investigate FreeBSD SIGSEGV in overrun 8k with misconfigured host :freebsd:
+  :PROPERTIES:
+  :ID:       f3bb9463-3846-4474-acf9-946d3e3521a1
+  :ORGBUG_ID: 2
+  :CREATED:  [2026-09-16 Wed]
+  :END:
+*Goal*
+
+Determine why =FreeBSD SIGSEGV in overrun 8k with misconfigured host= and restore a controlled, correctly diagnosed stack-overflow result.
+
+*Context*
+
+The =host_segfault= harness deliberately tells Wasmtime that Wasm may use a 100 MiB stack, then executes the module on a native thread with only a 2 MiB stack. This intentionally misconfigured host must hit the native guard page deterministically.
+
+On supported Unix paths, the original =SIGSEGV= or =SIGBUS= should be recognized as a stack overflow, produce a diagnostic containing =has overflowed its stack=, and terminate deliberately with =SIGABRT=. On FreeBSD amd64 the subprocess instead terminates directly with signal 11 (=SIGSEGV=), although stdout confirms that it reached the intended overflow path.
+
+The FreeBSD workflow currently skips this exact case in the combined runtime invocation, reruns it alone, and requires the exact known =SIGSEGV= result as a strict XFAIL.
+
+This issue tracks =overrun_with_big_module(8 << 10)= specifically. Related case: orgbug #3.
+
+*Investigation scope*
+
+1. Reproduce the isolated case on FreeBSD 14.5 and 15.1 amd64 through the vmactions workflow.
+2. Identify whether the raw =SIGSEGV= comes from Rust's native stack-overflow handling, Wasmtime's signal/trap handler, alternate signal-stack setup, guard-page classification, or their interaction.
+3. Verify the actual fault address against the native thread guard page and Wasmtime's registered Wasm stack limits.
+4. Preserve the safety rule that Wasmtime must not intercept unrelated host segmentation faults.
+5. Implement the platform fix or an upstream-approved FreeBSD-specific assertion, then remove this case's workflow-level strict XFAIL.
+
+*Acceptance criteria*
+
+- The isolated =host_segfault= test case passes natively on FreeBSD 14.5 and 15.1 amd64.
+- The case runs inside the normal Wasmtime runtime test command without =--skip=.
+- Its dedicated strict-XFAIL loop entry is removed from =.github/workflows/freebsd.yml=.
+- The remaining =host_segfault= cases, especially ordinary host faults and guard-page tests, continue to pass.
+- The full FreeBSD =workspace-debug= suite remains green.
+
+*Out of scope*
+
+- WebAssembly stack-switching proposal support (orgbug #1).
+- FreeBSD AArch64.
+- The related =32 KiB= case tracked separately as orgbug #3; one shared fix may resolve both issues.
+
+* TODO Investigate FreeBSD SIGSEGV in overrun 32k with misconfigured host :freebsd:
+  :PROPERTIES:
+  :ID:       0e641781-646b-4942-a5c9-b6ba512bcfff
+  :ORGBUG_ID: 3
+  :CREATED:  [2026-09-16 Wed]
+  :END:
+*Goal*
+
+Determine why =FreeBSD SIGSEGV in overrun 32k with misconfigured host= and restore a controlled, correctly diagnosed stack-overflow result.
+
+*Context*
+
+The =host_segfault= harness deliberately tells Wasmtime that Wasm may use a 100 MiB stack, then executes the module on a native thread with only a 2 MiB stack. This intentionally misconfigured host must hit the native guard page deterministically.
+
+On supported Unix paths, the original =SIGSEGV= or =SIGBUS= should be recognized as a stack overflow, produce a diagnostic containing =has overflowed its stack=, and terminate deliberately with =SIGABRT=. On FreeBSD amd64 the subprocess instead terminates directly with signal 11 (=SIGSEGV=), although stdout confirms that it reached the intended overflow path.
+
+The FreeBSD workflow currently skips this exact case in the combined runtime invocation, reruns it alone, and requires the exact known =SIGSEGV= result as a strict XFAIL.
+
+This issue tracks =overrun_with_big_module(32 << 10)= specifically. Related case: orgbug #2.
+
+*Investigation scope*
+
+1. Reproduce the isolated case on FreeBSD 14.5 and 15.1 amd64 through the vmactions workflow.
+2. Identify whether the raw =SIGSEGV= comes from Rust's native stack-overflow handling, Wasmtime's signal/trap handler, alternate signal-stack setup, guard-page classification, or their interaction.
+3. Verify the actual fault address against the native thread guard page and Wasmtime's registered Wasm stack limits.
+4. Preserve the safety rule that Wasmtime must not intercept unrelated host segmentation faults.
+5. Implement the platform fix or an upstream-approved FreeBSD-specific assertion, then remove this case's workflow-level strict XFAIL.
+
+*Acceptance criteria*
+
+- The isolated =host_segfault= test case passes natively on FreeBSD 14.5 and 15.1 amd64.
+- The case runs inside the normal Wasmtime runtime test command without =--skip=.
+- Its dedicated strict-XFAIL loop entry is removed from =.github/workflows/freebsd.yml=.
+- The remaining =host_segfault= cases, especially ordinary host faults and guard-page tests, continue to pass.
+- The full FreeBSD =workspace-debug= suite remains green.
+
+*Out of scope*
+
+- WebAssembly stack-switching proposal support (orgbug #1).
+- FreeBSD AArch64.
+- The related =8 KiB= case tracked separately as orgbug #2; one shared fix may resolve both issues.
+
