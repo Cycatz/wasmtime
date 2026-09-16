@@ -1783,7 +1783,15 @@ mod test_programs {
             println!("run {wasm:?}");
             let mut cmd = super::wasmtime(&["run", "-Sinherit-env", wasm])?;
 
-            for i in 0..512 {
+            // Keep the environment over 64 KiB to exercise the adapter bug
+            // this test guards against, while staying below FreeBSD's smaller
+            // execve(2) argument-and-environment limit.
+            let env_count = if cfg!(target_os = "freebsd") {
+                128
+            } else {
+                512
+            };
+            for i in 0..env_count {
                 let var = format!("KEY{i}");
                 let val = (0..1024).map(|_| 'x').collect::<String>();
                 cmd.env(&var, &val);
