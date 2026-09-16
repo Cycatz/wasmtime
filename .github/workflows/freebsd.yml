@@ -1,0 +1,325 @@
+name: FreeBSD amd64 baseline
+
+on:
+  push:
+    branches:
+    - freebsd-ci
+  workflow_dispatch:
+    inputs:
+      freebsd-release:
+        description: FreeBSD release to test
+        required: true
+        default: "15.1"
+        type: choice
+        options:
+        - "15.1"
+        - "14.5"
+      suite:
+        description: Test suite to run
+        required: true
+        default: core
+        type: choice
+        options:
+        - core
+        - workspace-debug
+        - workspace-debug-and-release
+
+permissions:
+  contents: read
+
+concurrency:
+  group: freebsd-amd64-${{ github.ref }}-${{ inputs.freebsd-release || '15.1' }}-${{ inputs.suite || 'workspace-debug' }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: FreeBSD ${{ inputs.freebsd-release || '15.1' }} amd64 (${{ inputs.suite || 'workspace-debug' }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      CARGO_BUILD_WARNINGS: deny
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      # Keep build artifacts inside the guest instead of copying a large target
+      # directory between the Ubuntu host and the FreeBSD VM.
+      CARGO_TARGET_DIR: /tmp/wasmtime-target
+      FREEBSD_RELEASE: ${{ inputs.freebsd-release || '15.1' }}
+      # Pushes exercise the complete debug workspace. A manual run can select
+      # the shorter core baseline while investigating a core-only change.
+      FREEBSD_TEST_SUITE: ${{ inputs.suite || 'workspace-debug' }}
+      RUST_BACKTRACE: 1
+      WIT_REQUIRE_SEMICOLONS: 1
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+
+    # Match the default toolchain selected by Wasmtime's install-rust action:
+    # the workspace MSRV plus two stable Rust releases.
+    - name: Select the Rust toolchain
+      shell: bash
+      run: |
+        msrv_minor=$(sed -n 's/^rust-version = "1\.\([0-9][0-9]*\)\.[0-9][0-9]*"/\1/p' Cargo.toml)
+        if [[ -z "$msrv_minor" ]]; then
+          echo "failed to read workspace rust-version from Cargo.toml" >&2
+          exit 1
+        fi
+        echo "WASMTIME_CI_RUST=1.$((msrv_minor + 2)).0" >> "$GITHUB_ENV"
+
+    - name: Start FreeBSD VM
+      uses: vmactions/freebsd-vm@8b0f1a8fc0ea0def307835c258940ca358fe6480 # v1.5.6
+      with:
+        release: ${{ env.FREEBSD_RELEASE }}
+        arch: x86_64
+        cpu: 4
+        mem: 8192
+        sync: rsync
+        copyback: false
+        cache-after-prepare: true
+        custom-shell-name: freebsd
+        envs: CARGO_BUILD_WARNINGS CARGO_INCREMENTAL CARGO_PROFILE_DEV_DEBUG CARGO_PROFILE_TEST_DEBUG CARGO_TARGET_DIR FREEBSD_RELEASE FREEBSD_TEST_SUITE RUST_BACKTRACE WASMTIME_CI_RUST WIT_REQUIRE_SEMICOLONS
+        prepare: |
+          set -eux
+          pkg install -y bash ca_root_nss curl git-lite node python3
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain none
+          . "$HOME/.cargo/env"
+          rustup toolchain install "$WASMTIME_CI_RUST" --no-self-update
+          rustup default "$WASMTIME_CI_RUST"
+          rustup target add wasm32-wasip1 wasm32-wasip2 wasm32-unknown-unknown
+
+    - name: Verify FreeBSD environment
+      shell: freebsd {0}
+      run: |
+        set -eux
+        export PATH="$HOME/.cargo/bin:/usr/local/bin:$PATH"
+
+        # The prepared-image cache key does not include environment values.
+        # Re-check the selected toolchain so an MSRV bump cannot accidentally
+        # reuse the previous toolchain from a warm VM cache.
+        rustup toolchain install "$WASMTIME_CI_RUST" --no-self-update
+        rustup default "$WASMTIME_CI_RUST"
+        rustup target add wasm32-wasip1 wasm32-wasip2 wasm32-unknown-unknown
+
+        freebsd-version
+        uname -a
+        sysctl hw.model hw.ncpu hw.physmem
+        getconf PAGESIZE
+        getconf ARG_MAX
+        sysctl security.bsd.stack_guard_page || true
+        ulimit -a
+        df -h
+        rustc --version --verbose
+        cargo --version --verbose
+
+    # This is the native-build gate that upstream currently performs only by
+    # cross-compiling from Ubuntu.
+    - name: Check the native workspace build
+      shell: freebsd {0}
+      run: |
+        set -eux
+        export PATH="$HOME/.cargo/bin:/usr/local/bin:$PATH"
+        cargo check --locked
+
+    # Reuse Wasmtime's own workspace sharder rather than maintaining a second
+    # crate list here. Its first three buckets contain every workspace crate
+    # except the three large crates covered by the core steps below.
+    - name: Prepare the generic workspace shards
+      if: env.FREEBSD_TEST_SUITE == 'workspace-debug' || env.FREEBSD_TEST_SUITE == 'workspace-debug-and-release'
+      shell: freebsd {0}
+      run: |
+        set -eux
+        export PATH="$HOME/.cargo/bin:/usr/local/bin:$PATH"
+        node ./ci/build-test-matrix.js /dev/null /dev/null > /tmp/freebsd-test-matrix.json
+        python3 - <<'PY'
+        import json
+        from pathlib import Path
+
+        matrix = json.loads(Path("/tmp/freebsd-test-matrix.json").read_text())
+        if len(matrix) < 3:
+            raise SystemExit(f"expected at least three workspace buckets, got {len(matrix)}")
+        for index, entry in enumerate(matrix[:3], 1):
+            name = entry["name"]
+            if f"({index}/" not in name:
+                raise SystemExit(f"unexpected generic bucket {index}: {name}")
+            Path(f"/tmp/freebsd-workspace-bucket-{index}").write_text(entry["bucket"])
+            print(f"generic workspace bucket {index}: {name}")
+        PY
+
+    # Mirror the largest, platform-relevant buckets in Wasmtime's existing test
+    # matrix while reusing one guest build directory. Separate steps identify
+    # the failing subsystem even when the VM action cannot publish guest logs.
+    - name: Test the Wasmtime runtime
+      id: runtime
+      continue-on-error: true
+      shell: freebsd {0}
+      run: |
+        set -eux
+        export PATH="$HOME/.cargo/bin:/usr/local/bin:$PATH"
+        cargo test --locked --all-features --package wasmtime -- \
+          --skip 'overrun 8k with misconfigured host' \
+          --skip 'overrun 32k with misconfigured host'
+
+    # FreeBSD currently terminates these deliberately misconfigured native
+    # Wasm stacks with SIGSEGV instead of Rust's SIGABRT stack-overflow
+    # diagnostic. Treat this as a strict expected failure: a different failure
+    # or an unexpected pass requires this baseline to be revisited.
+    - name: Verify the known FreeBSD native stack-overflow failure
+      id: host_stack_overflow
+      continue-on-error: true
+      shell: freebsd {0}
+      run: |
+        set -eux
+        export PATH="$HOME/.cargo/bin:/usr/local/bin:$PATH"
+        for test_name in \
+          'overrun 8k with misconfigured host' \
+          'overrun 32k with misconfigured host'
+        do
+          log=$(mktemp)
+          if cargo test --locked --all-features --package wasmtime \
+            --test host_segfault -- "$test_name" >"$log" 2>&1; then
+            cat "$log"
+            echo "expected '$test_name' to fail on FreeBSD" >&2
+            exit 1
+          fi
+          cat "$log"
+          grep -Fq 'test result: FAILED. 0 passed; 1 failed' "$log"
+          grep -Fq 'got status: signal: 11 (SIGSEGV)' "$log"
+        done
+
+    - name: Test the CLI integration suite
+      id: cli_integration
+      continue-on-error: true
+      shell: freebsd {0}
+      run: |
+        set -eux
+        export PATH="$HOME/.cargo/bin:/usr/local/bin:$PATH"
+        cargo test --locked --all-features --package wasmtime-cli --test all
+
+    - name: Test the WAST suite
+      id: wast
+      continue-on-error: true
+      shell: freebsd {0}
+      run: |
+        set -eux
+        export PATH="$HOME/.cargo/bin:/usr/local/bin:$PATH"
+        cargo test --locked --all-features --package wasmtime-cli --test wast
+
+    - name: Test the remaining CLI targets
+      id: cli_remaining
+      continue-on-error: true
+      shell: freebsd {0}
+      run: |
+        set -eux
+        export PATH="$HOME/.cargo/bin:/usr/local/bin:$PATH"
+        cargo test --locked --all-features --package wasmtime-cli \
+          --lib --bins \
+          --test disable_host_trap_handlers \
+          --test disas \
+          --test rlimited-memory \
+          --test wasi
+
+    - name: Test WASI
+      id: wasi
+      continue-on-error: true
+      shell: freebsd {0}
+      run: |
+        set -eux
+        export PATH="$HOME/.cargo/bin:/usr/local/bin:$PATH"
+        cargo test --locked --all-features --package wasmtime-wasi -- \
+          --skip p2::sync::p2_udp_send_to_closed_receiver
+
+    # This case passes in the async and preview 3 suites, but timed out in the
+    # parallel preview 2 sync suite. Run it alone to distinguish a suite-level
+    # port-reuse race from a FreeBSD socket failure.
+    - name: Test the FreeBSD UDP closed-receiver case in isolation
+      id: wasi_udp_closed_receiver
+      continue-on-error: true
+      shell: freebsd {0}
+      run: |
+        set -eux
+        export PATH="$HOME/.cargo/bin:/usr/local/bin:$PATH"
+        cargo test --locked --all-features --package wasmtime-wasi \
+          --test all p2::sync::p2_udp_send_to_closed_receiver -- --exact
+
+    - name: Test generic workspace shard 1
+      id: workspace_1
+      if: always() && (env.FREEBSD_TEST_SUITE == 'workspace-debug' || env.FREEBSD_TEST_SUITE == 'workspace-debug-and-release')
+      continue-on-error: true
+      shell: freebsd {0}
+      run: |
+        set -eux
+        export PATH="$HOME/.cargo/bin:/usr/local/bin:$PATH"
+        python3 ./ci/run-tests.py --locked --no-fail-fast \
+          $(cat /tmp/freebsd-workspace-bucket-1)
+
+    - name: Test generic workspace shard 2
+      id: workspace_2
+      if: always() && (env.FREEBSD_TEST_SUITE == 'workspace-debug' || env.FREEBSD_TEST_SUITE == 'workspace-debug-and-release')
+      continue-on-error: true
+      shell: freebsd {0}
+      run: |
+        set -eux
+        export PATH="$HOME/.cargo/bin:/usr/local/bin:$PATH"
+        python3 ./ci/run-tests.py --locked --no-fail-fast \
+          $(cat /tmp/freebsd-workspace-bucket-2)
+
+    - name: Test generic workspace shard 3
+      id: workspace_3
+      if: always() && (env.FREEBSD_TEST_SUITE == 'workspace-debug' || env.FREEBSD_TEST_SUITE == 'workspace-debug-and-release')
+      continue-on-error: true
+      shell: freebsd {0}
+      run: |
+        set -eux
+        export PATH="$HOME/.cargo/bin:/usr/local/bin:$PATH"
+        python3 ./ci/run-tests.py --locked --no-fail-fast \
+          $(cat /tmp/freebsd-workspace-bucket-3)
+
+    - name: Test the release workspace
+      id: workspace_release
+      if: env.FREEBSD_TEST_SUITE == 'workspace-debug-and-release'
+      continue-on-error: true
+      shell: freebsd {0}
+      run: |
+        set -eux
+        export PATH="$HOME/.cargo/bin:/usr/local/bin:$PATH"
+        python3 ./ci/run-tests.py --locked --release --no-fail-fast
+
+    - name: Report FreeBSD test failures
+      if: always()
+      shell: bash
+      env:
+        CLI_INTEGRATION_OUTCOME: ${{ steps.cli_integration.outcome }}
+        CLI_REMAINING_OUTCOME: ${{ steps.cli_remaining.outcome }}
+        FREEBSD_TEST_SUITE: ${{ env.FREEBSD_TEST_SUITE }}
+        HOST_STACK_OVERFLOW_OUTCOME: ${{ steps.host_stack_overflow.outcome }}
+        RUNTIME_OUTCOME: ${{ steps.runtime.outcome }}
+        WASI_OUTCOME: ${{ steps.wasi.outcome }}
+        WASI_UDP_CLOSED_RECEIVER_OUTCOME: ${{ steps.wasi_udp_closed_receiver.outcome }}
+        WAST_OUTCOME: ${{ steps.wast.outcome }}
+        WORKSPACE_1_OUTCOME: ${{ steps.workspace_1.outcome }}
+        WORKSPACE_2_OUTCOME: ${{ steps.workspace_2.outcome }}
+        WORKSPACE_3_OUTCOME: ${{ steps.workspace_3.outcome }}
+        WORKSPACE_RELEASE_OUTCOME: ${{ steps.workspace_release.outcome }}
+      run: |
+        declare -a failed=()
+        [[ "$RUNTIME_OUTCOME" == success ]] || failed+=(runtime)
+        [[ "$HOST_STACK_OVERFLOW_OUTCOME" == success ]] || failed+=(host-stack-overflow)
+        [[ "$CLI_INTEGRATION_OUTCOME" == success ]] || failed+=(cli-integration)
+        [[ "$WAST_OUTCOME" == success ]] || failed+=(wast)
+        [[ "$CLI_REMAINING_OUTCOME" == success ]] || failed+=(cli-remaining)
+        [[ "$WASI_OUTCOME" == success ]] || failed+=(wasi)
+        [[ "$WASI_UDP_CLOSED_RECEIVER_OUTCOME" == success ]] || failed+=(wasi-udp-closed-receiver)
+        if [[ "$FREEBSD_TEST_SUITE" != core ]]; then
+          [[ "$WORKSPACE_1_OUTCOME" == success ]] || failed+=(workspace-1)
+          [[ "$WORKSPACE_2_OUTCOME" == success ]] || failed+=(workspace-2)
+          [[ "$WORKSPACE_3_OUTCOME" == success ]] || failed+=(workspace-3)
+        fi
+        if [[ "$FREEBSD_TEST_SUITE" == workspace-debug-and-release ]]; then
+          [[ "$WORKSPACE_RELEASE_OUTCOME" == success ]] || failed+=(workspace-release)
+        fi
+        if (( ${#failed[@]} != 0 )); then
+          printf '::error title=FreeBSD failures::%s\n' "${failed[*]}"
+          exit 1
+        fi
