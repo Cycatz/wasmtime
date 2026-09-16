@@ -168,3 +168,77 @@ Explain and eliminate the parallel-only timeout of =p2::sync::p2_udp_send_to_clo
 - Unrelated UDP disconnect error normalization already covered by the FreeBSD compatibility patch.
 - FreeBSD AArch64.
 
+* TODO Evaluate Capsicum as a second sandbox boundary on FreeBSD :freebsd:security:
+  :PROPERTIES:
+  :ID:       5c2d6eae-4eaa-4a92-b9d3-ed426f8ed162
+  :ORGBUG_ID: 5
+  :CREATED:  [2026-09-16 Wed]
+  :END:
+*Goal*
+
+Evaluate an optional Capsicum boundary around native Wasmtime execution on
+FreeBSD. This would be defense in depth for WASI and runtime bugs; it would not
+replace Wasmtime's WebAssembly memory isolation.
+
+*Context*
+
+- Wasmtime already gives guests explicit WASI preopens. Its FreeBSD filesystem
+  implementation uses =O_RESOLVE_BENEATH=/=AT_RESOLVE_BENEATH= to keep path
+  resolution under those directory descriptors.
+- Capsicum can additionally restrict each descriptor with
+  =cap_rights_limit(2)=, =cap_fcntls_limit(2)=, and =cap_ioctls_limit(2)=, then
+  prevent access to global namespaces with =cap_enter(2)=.
+- =cap_enter()= is irreversible, process-wide, and inherited by descendants.
+  A library must not silently place its embedding application into capability
+  mode. The likely home is an explicit CLI mode or a dedicated worker process.
+- Capsicum does not limit CPU time or memory consumption; those require
+  separate resource limits.
+
+References:
+- [[https://github.com/bytecodealliance/wasmtime/blob/main/docs/WASI-tutorial.md][Wasmtime WASI capability model]]
+- [[https://github.com/bytecodealliance/wasmtime/tree/main/crates/wasi/src/filesystem/primitives/rustix/freebsd][Wasmtime's FreeBSD filesystem primitives]]
+- [[https://man.freebsd.org/cgi/man.cgi?apropos=0&manpath=FreeBSD+15.1-RELEASE&query=cap_enter&sektion=2][~cap_enter(2)~]]
+- [[https://man.freebsd.org/cgi/man.cgi?query=rights][Capsicum descriptor rights]]
+
+*Investigation scope*
+
+1. State the threat model: contain a guest that reaches a WASI/runtime bug or
+   gains native execution, subject to the descriptors and memory deliberately
+   retained by the worker.
+2. Prototype descriptor-only hardening by duplicating guest-visible preopens,
+   stdio, sockets, and clocks/random resources and reducing each duplicate to
+   the minimum Capsicum rights matching its WASI permissions.
+3. Compare two full capability-mode designs:
+   - an explicit FreeBSD-only CLI mode after loading and compilation; and
+   - a supervisor/worker design that passes module bytes and preopened
+     descriptors to a child, closes unrelated descriptors, enters capability
+     mode, then compiles and executes inside the sandbox.
+4. Audit required operations after =cap_enter()=: JIT =mmap=/=mprotect=,
+   signals and alternate stacks, threads, =kqueue=, clocks, randomness, DNS,
+   code caches, profiling, debug output, and component resources.
+5. Map =FsPerms=, descriptor flags, directory mutations, and socket operations
+   to the minimum =CAP_*= rights, including rights inherited through =openat=.
+6. Test both ordinary WASI workloads and attempted namespace escapes. Use
+   capability-violation traps while developing so unexpected host operations
+   are visible rather than silently converted into generic errors.
+7. Measure startup and steady-state overhead and document which Wasmtime
+   features must be disabled or supplied through preopened services.
+
+*Acceptance criteria*
+
+- The design clearly separates Wasm isolation, WASI policy, and the additional
+  Capsicum containment boundary.
+- No general embedding API calls =cap_enter()= implicitly.
+- A prototype runs representative core Wasm, component-model, Preview 1,
+  Preview 2, and Preview 3 workloads in capability mode on FreeBSD amd64.
+- Guest-visible descriptors have no Capsicum rights broader than the
+  corresponding WASI grant.
+- Tests prove that absolute filesystem, PID/IPC namespace, and undelegated
+  network access fail while configured preopens and sockets continue to work.
+- Normal non-Capsicum behavior and the full FreeBSD CI baseline remain green.
+
+*Out of scope*
+
+- Replacing Wasmtime's existing memory-safety and control-flow sandbox.
+- Imposing Capsicum on arbitrary applications embedding the Wasmtime library.
+- CPU, memory, and process-count quotas.
