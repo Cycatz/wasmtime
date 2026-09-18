@@ -46,6 +46,86 @@ fn overrun_the_stack() -> ! {
     allocate_stack_space();
 }
 
+#[cfg(target_os = "freebsd")]
+fn print_freebsd_stack_diagnostics() {
+    if env::var_os("__WASMTIME_FREEBSD_STACK_DIAGNOSTICS").is_none() {
+        return;
+    }
+
+    unsafe {
+        let mut attr = std::mem::MaybeUninit::<libc::pthread_attr_t>::uninit();
+        assert_eq!(libc::pthread_attr_init(attr.as_mut_ptr()), 0);
+        let mut attr = attr.assume_init();
+        assert_eq!(
+            libc::pthread_attr_get_np(libc::pthread_self(), &mut attr),
+            0
+        );
+
+        let mut stack_addr = std::ptr::null_mut();
+        let mut stack_size = 0;
+        let mut guard_size = 0;
+        assert_eq!(
+            libc::pthread_attr_getstack(&attr, &mut stack_addr, &mut stack_size),
+            0
+        );
+        assert_eq!(libc::pthread_attr_getguardsize(&attr, &mut guard_size), 0);
+        assert_eq!(libc::pthread_attr_destroy(&mut attr), 0);
+
+        let mut kernel_guard_pages = 0usize;
+        let mut kernel_guard_pages_size = std::mem::size_of_val(&kernel_guard_pages);
+        let sysctl = c"security.bsd.stack_guard_page";
+        let sysctl_result = libc::sysctlbyname(
+            sysctl.as_ptr(),
+            (&raw mut kernel_guard_pages).cast(),
+            &raw mut kernel_guard_pages_size,
+            std::ptr::null_mut(),
+            0,
+        );
+
+        let mut altstack = std::mem::MaybeUninit::<libc::stack_t>::zeroed();
+        assert_eq!(
+            libc::sigaltstack(std::ptr::null(), altstack.as_mut_ptr()),
+            0
+        );
+        let altstack = altstack.assume_init();
+
+        let mut sigsegv = std::mem::MaybeUninit::<libc::sigaction>::zeroed();
+        assert_eq!(
+            libc::sigaction(libc::SIGSEGV, std::ptr::null(), sigsegv.as_mut_ptr()),
+            0
+        );
+        let sigsegv = sigsegv.assume_init();
+
+        eprintln!(
+            "FREEBSD_STACK_DIAGNOSTIC stack_base={stack_addr:p} \
+             stack_size={stack_size:#x} pthread_guard_size={guard_size:#x}"
+        );
+        eprintln!(
+            "FREEBSD_STACK_DIAGNOSTIC rust_recorded_guard={:#x}..{:#x}",
+            stack_addr.addr().saturating_sub(guard_size),
+            stack_addr.addr(),
+        );
+        eprintln!(
+            "FREEBSD_STACK_DIAGNOSTIC kernel_guard_pages_result={} \
+             kernel_guard_pages={kernel_guard_pages}",
+            sysctl_result,
+        );
+        eprintln!(
+            "FREEBSD_STACK_DIAGNOSTIC altstack_base={:p} altstack_size={:#x} \
+             altstack_flags={:#x}",
+            altstack.ss_sp, altstack.ss_size, altstack.ss_flags,
+        );
+        eprintln!(
+            "FREEBSD_STACK_DIAGNOSTIC current_sigsegv_handler={:#x} \
+             current_sigsegv_flags={:#x}",
+            sigsegv.sa_sigaction, sigsegv.sa_flags,
+        );
+    }
+}
+
+#[cfg(not(target_os = "freebsd"))]
+fn print_freebsd_stack_diagnostics() {}
+
 fn run_future<F: Future>(future: F) -> F::Output {
     let mut f = Pin::from(Box::new(future));
     let waker = dummy_waker();
@@ -382,6 +462,7 @@ fn overrun_with_big_module(approx_stack: usize) {
     std::thread::Builder::new()
         .stack_size(2 << 20)
         .spawn(move || {
+            print_freebsd_stack_diagnostics();
             println!("{CONFIRM}");
             f.call(&mut store, ()).unwrap();
         })

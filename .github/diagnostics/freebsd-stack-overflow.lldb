@@ -1,0 +1,29 @@
+settings set auto-confirm true
+settings set stop-disassembly-display never
+
+breakpoint set -r 'wasmtime::runtime::vm::sys::unix::signals::trap_handler$'
+breakpoint command add 1
+script print("FREEBSD_STACK_DIAGNOSTIC entered_wasmtime_trap_handler")
+frame variable signum siginfo context
+memory read -fx -s8 -c6 siginfo
+script local d = lldb.SBDebugger.FindDebuggerWithID(1); local p = d:GetSelectedTarget():GetProcess(); local h = io.popen("procstat -v " .. p:GetProcessID()); print("FREEBSD_STACK_DIAGNOSTIC procstat_begin"); print(h:read("*a")); print("FREEBSD_STACK_DIAGNOSTIC procstat_end"); h:close()
+continue
+DONE
+
+breakpoint set -r 'wasmtime::runtime::vm::sys::unix::signals::delegate_signal_to_previous_handler$'
+breakpoint command add 2
+script print("FREEBSD_STACK_DIAGNOSTIC delegated_to_previous_handler")
+frame variable previous signum siginfo context
+continue
+DONE
+
+breakpoint set -r 'std::sys::pal::unix::stack_overflow::imp::signal_handler$'
+breakpoint command add 3
+script print("FREEBSD_STACK_DIAGNOSTIC entered_rust_stack_overflow_handler")
+continue
+DONE
+
+process handle SIGSEGV -n false -p true -s false
+run
+process status
+quit

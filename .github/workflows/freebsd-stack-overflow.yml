@@ -1,0 +1,117 @@
+name: FreeBSD stack-overflow diagnostics
+
+on:
+  push:
+    branches:
+    - diagnose/freebsd-stack-overflow
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: FreeBSD ${{ matrix.release }} amd64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        release:
+        - "14.5"
+        - "15.1"
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_TEST_DEBUG: 1
+      CARGO_TARGET_DIR: /tmp/wasmtime-target
+      FREEBSD_RELEASE: ${{ matrix.release }}
+      RUST_BACKTRACE: 1
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+
+    - name: Select the Rust toolchain
+      shell: bash
+      run: |
+        msrv_minor=$(sed -n 's/^rust-version = "1\.\([0-9][0-9]*\)\.[0-9][0-9]*"/\1/p' Cargo.toml)
+        if [[ -z "$msrv_minor" ]]; then
+          echo "failed to read workspace rust-version from Cargo.toml" >&2
+          exit 1
+        fi
+        echo "WASMTIME_CI_RUST=1.$((msrv_minor + 2)).0" >> "$GITHUB_ENV"
+
+    - name: Start FreeBSD VM
+      uses: vmactions/freebsd-vm@8b0f1a8fc0ea0def307835c258940ca358fe6480 # v1.5.6
+      with:
+        release: ${{ env.FREEBSD_RELEASE }}
+        arch: x86_64
+        cpu: 4
+        mem: 8192
+        sync: rsync
+        copyback: false
+        cache-after-prepare: true
+        custom-shell-name: freebsd
+        envs: CARGO_INCREMENTAL CARGO_PROFILE_TEST_DEBUG CARGO_TARGET_DIR FREEBSD_RELEASE RUST_BACKTRACE WASMTIME_CI_RUST
+        prepare: |
+          set -eux
+          pkg install -y bash ca_root_nss curl git-lite
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain none
+          . "$HOME/.cargo/env"
+          rustup toolchain install "$WASMTIME_CI_RUST" --no-self-update
+          rustup default "$WASMTIME_CI_RUST"
+
+    - name: Build the focused test
+      shell: freebsd {0}
+      run: |
+        set -eux
+        export PATH="$HOME/.cargo/bin:/usr/local/bin:$PATH"
+        freebsd-version -ku
+        uname -a
+        sysctl security.bsd.stack_guard_page
+        getconf PAGESIZE
+        rustc --version --verbose
+        cargo test --locked --all-features --package wasmtime \
+          --test host_segfault --no-run
+
+    - name: Run control cases
+      shell: freebsd {0}
+      run: |
+        set -eux
+        export PATH="$HOME/.cargo/bin:/usr/local/bin:$PATH"
+        cargo test --locked --all-features --package wasmtime \
+          --test host_segfault -- --exact 'make instance then overrun the stack'
+        cargo test --locked --all-features --package wasmtime \
+          --test host_segfault -- --exact 'hit async stack guard page'
+
+    - name: Run and trace misconfigured-host cases
+      shell: freebsd {0}
+      run: |
+        set -eux
+        export PATH="$HOME/.cargo/bin:/usr/local/bin:$PATH"
+        test_bin=$(find "$CARGO_TARGET_DIR/debug/deps" -maxdepth 1 -type f \
+          -perm -111 -name 'host_segfault-*' | head -1)
+        test -n "$test_bin"
+
+        for test_name in \
+          'overrun 8k with misconfigured host' \
+          'overrun 32k with misconfigured host'
+        do
+          log=$(mktemp)
+          if __WASMTIME_FREEBSD_STACK_DIAGNOSTICS=1 \
+            cargo test --locked --all-features --package wasmtime \
+              --test host_segfault -- --exact "$test_name" >"$log" 2>&1
+          then
+            cat "$log"
+            echo "diagnostic case unexpectedly passed: $test_name" >&2
+          else
+            cat "$log"
+          fi
+
+          __TEST_TO_RUN="$test_name" \
+          __WASMTIME_FREEBSD_STACK_DIAGNOSTICS=1 \
+            lldb --batch \
+              --source .github/diagnostics/freebsd-stack-overflow.lldb \
+              "$test_bin" || true
+        done
