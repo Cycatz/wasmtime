@@ -55,7 +55,7 @@ jobs:
         envs: CARGO_INCREMENTAL CARGO_PROFILE_TEST_DEBUG CARGO_TARGET_DIR FREEBSD_RELEASE RUST_BACKTRACE WASMTIME_CI_RUST
         prepare: |
           set -eux
-          pkg install -y bash ca_root_nss curl git-lite
+          pkg install -y bash ca_root_nss curl git-lite python3
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --profile minimal --default-toolchain none
           . "$HOME/.cargo/env"
@@ -113,5 +113,8 @@ jobs:
           __WASMTIME_FREEBSD_STACK_DIAGNOSTICS=1 \
             lldb --batch \
               --source .github/diagnostics/freebsd-stack-overflow.lldb \
-              "$test_bin" || true
+              "$test_bin" >"$log.lldb" 2>&1 || true
+          cat "$log.lldb"
+          python3 .github/diagnostics/check-freebsd-stack-overflow.py \
+            "$log.lldb" "$test_name"
         done

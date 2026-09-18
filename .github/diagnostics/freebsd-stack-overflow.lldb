@@ -4,8 +4,8 @@ settings set stop-disassembly-display never
 breakpoint set -r 'wasmtime::runtime::vm::sys::unix::signals::trap_handler$'
 breakpoint command add 1
 script print("FREEBSD_STACK_DIAGNOSTIC entered_wasmtime_trap_handler")
-frame variable signum siginfo context
-memory read -fx -s8 -c6 siginfo
+register read rdi rsi rdx
+memory read -fx -s8 -c6 $rsi
 script local d = lldb.SBDebugger.FindDebuggerWithID(1); local p = d:GetSelectedTarget():GetProcess(); local h = io.popen("procstat -v " .. p:GetProcessID()); print("FREEBSD_STACK_DIAGNOSTIC procstat_begin"); print(h:read("*a")); print("FREEBSD_STACK_DIAGNOSTIC procstat_end"); h:close()
 continue
 DONE
@@ -13,7 +13,7 @@ DONE
 breakpoint set -r 'wasmtime::runtime::vm::sys::unix::signals::delegate_signal_to_previous_handler$'
 breakpoint command add 2
 script print("FREEBSD_STACK_DIAGNOSTIC delegated_to_previous_handler")
-frame variable previous signum siginfo context
+register read rdi rsi rdx rcx
 continue
 DONE
 
